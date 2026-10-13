@@ -1,0 +1,65 @@
+# Builds a signed release APK and publishes it as a GitHub Release.
+#
+# Trigger: push a tag matching the versionName in app/build.gradle.kts, e.g. `v1.0.0`.
+# Required repository secrets:
+#   KEYSTORE_BASE64   base64-encoded release keystore (.jks)
+#   KEYSTORE_PASSWORD keystore password
+#   KEY_ALIAS         key alias
+#   KEY_PASSWORD      key password
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v6
+
+      - name: Verify tag matches versionName
+        run: |
+          VERSION=$(./gradlew -q printVersion)
+          if [ "v$VERSION" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match versionName v$VERSION"
+            exit 1
+          fi
+
+      - name: Decode keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::Missing KEYSTORE_BASE64 secret"
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+
+      - name: Build release APK
+        env:
+          KEYSTORE_FILE: ${{ runner.temp }}/release.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew assembleRelease --no-daemon
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk "simplevolume-$GITHUB_REF_NAME.apk"
+          gh release create "$GITHUB_REF_NAME" "simplevolume-$GITHUB_REF_NAME.apk" \
+            --title "$GITHUB_REF_NAME" --generate-notes
